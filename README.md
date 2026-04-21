@@ -74,7 +74,8 @@ For the `--skip-gpu` flag to work, ensure any GPU-specific tasks in your `playbo
         state: present
       tags: [gpu]  # <--- This tells Ansible to skip this task during local testing
 ```
-> [!IMPORTANT] _(Ensure this tag is applied to the NVIDIA drivers, nvtop, the Container Toolkit, and the GPU power limit systemd tasks)._
+> [!IMPORTANT]
+> _(Ensure this tag is applied to the NVIDIA drivers, nvtop, the Container Toolkit, and the GPU power limit systemd tasks)._
 
 ### 2. Spinning up a Test VM (Multipass)
 
@@ -102,7 +103,8 @@ chmod +x bootstrap.sh
 ./bootstrap.sh --skip-gpu
 ```
 
-> [!NOTE] _(No reboot is required when running in testing mode. You can immediately access Dockge via the VM's IP address, which you can find by typing `ip a`)._
+> [!NOTE]
+> _(No reboot is required when running in testing mode. You can immediately access Dockge via the VM's IP address, which you can find by typing `ip a`)._
 
 When finished testing, you can clean up your Mac's resources by exiting the VM (`exit`) and running:
 
