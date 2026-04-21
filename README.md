@@ -43,7 +43,7 @@ ai-homelab/
 
 
     ```bash
-    git clone [https://github.com/YOUR_USERNAME/YOUR_REPO.git](https://github.com/YOUR_USERNAME/YOUR_REPO.git) ai-homelab
+    git clone https://github.com/aserrallerios/ai-homelab.git
     cd ai-homelab
     chmod +x bootstrap.sh
     ./bootstrap.sh
@@ -96,7 +96,7 @@ multipass shell ai-test
 Inside your test VM, clone the repository and execute the bootstrap script with the `--skip-gpu` flag:
 
 ```bash
-git clone [https://github.com/aserrallerios/models-server.git](https://github.com/aserrallerios/models-server.git) ai-homelab
+git clone https://github.com/aserrallerios/ai-homelab.git
 cd ai-homelab
 chmod +x bootstrap.sh
 ./bootstrap.sh --skip-gpu
