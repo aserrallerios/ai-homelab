@@ -4,6 +4,7 @@ After=network.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/bin/nvidia-smi -pm 1
 ExecStart=/usr/bin/nvidia-smi -pl {{ gpu_power_limit }}
 RemainAfterExit=yes
 

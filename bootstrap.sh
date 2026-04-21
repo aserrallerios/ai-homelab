@@ -1,51 +1,51 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+# Exit immediately if a command exits with a non-zero status
+set -e
 
-# models-server bootstrap script
-# This script prepares a headless Ubuntu server for Ansible-based provisioning.
-# It installs required dependencies and launches the Ansible playbook.
-
-
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-ANSIBLE_DIR="$REPO_ROOT/ansible"
-
-# Detect the username running the script (not root)
-if [[ -n "$SUDO_USER" && "$SUDO_USER" != "root" ]]; then
-  BOOTSTRAP_USER="$SUDO_USER"
-else
-  BOOTSTRAP_USER="$USER"
+# Check for the --skip-gpu flag
+SKIP_GPU=false
+if [[ "$1" == "--skip-gpu" ]]; then
+    SKIP_GPU=true
 fi
 
-# Colors for output
-GREEN="\033[0;32m"
-YELLOW="\033[1;33m"
-NC="\033[0m"
+# Capture the non-root user who invoked the script
+CURRENT_USER=$USER
 
-info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+echo "=========================================="
+echo " Starting AI Server Bootstrap Process"
+echo " Target User: $CURRENT_USER"
+if [ "$SKIP_GPU" = true ]; then
+    echo " Mode: TESTING (Skipping GPU Setup)"
+else
+    echo " Mode: PRODUCTION (Including NVIDIA Setup)"
+fi
+echo "=========================================="
 
-info "Updating apt cache and installing dependencies..."
+echo "=> Updating apt cache and installing Ansible..."
 sudo apt-get update -y
-sudo apt-get install -y python3 python3-pip git
+sudo apt-get install -y software-properties-common
+sudo apt-add-repository --yes --update ppa:ansible/ansible
+sudo apt-get install -y ansible
 
-if ! command -v ansible >/dev/null 2>&1; then
-  info "Installing Ansible..."
-  python3 -m pip install --user ansible
-  export PATH="$HOME/.local/bin:$PATH"
+echo "=> Executing Ansible Playbook..."
+if [ "$SKIP_GPU" = true ]; then
+    sudo ansible-playbook playbook.yml -e "target_user=$CURRENT_USER" --skip-tags "gpu"
 else
-  info "Ansible already installed."
+    sudo ansible-playbook playbook.yml -e "target_user=$CURRENT_USER"
 fi
 
-info "Bootstrapping complete."
-
-echo
-echo -e "${GREEN}Detected user:${NC} $BOOTSTRAP_USER"
-read -rp "Proceed with this user? (Y/n): " CONFIRM
-CONFIRM=${CONFIRM:-Y}
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-  warn "Aborting bootstrap."
-  exit 1
+echo ""
+echo "========================================================================="
+echo "  BOOTSTRAP COMPLETE!"
+if [ "$SKIP_GPU" = false ]; then
+    echo "  CRITICAL: You must reboot your server now to load the Nvidia drivers."
+    echo "  Command: sudo reboot"
+    echo ""
+    echo "  After rebooting, wait 60 seconds, then open your browser to:"
+else
+    echo "  (Skipped GPU driver installation. No reboot required.)"
+    echo ""
+    echo "  Open your browser to:"
 fi
-
-info "Running Ansible playbook as $BOOTSTRAP_USER..."
-ansible-playbook "$ANSIBLE_DIR/site.yml" --connection=local -e "ANSIBLE_USER=$BOOTSTRAP_USER"
+echo "  http://<your-server-ip>:5001"
+echo "========================================================================="

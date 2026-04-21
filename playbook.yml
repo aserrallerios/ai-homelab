@@ -1,6 +1,7 @@
 ---
-- name: Bootstrap models-server host
-  hosts: localhost # Note: Change to your target group (e.g., 'all' or 'models-server') if running from a separate machine
+- name: Bootstrap AI Headless Server
+  hosts: localhost
+  connection: local
   become: true
   vars:
     docker_apt_repo: "https://download.docker.com/linux/ubuntu"
@@ -12,7 +13,8 @@
       - docker-buildx-plugin
       - docker-compose-plugin
     nvtop_repo: "ppa:flexiondotorg/nvtop"
-    gpu_power_limit: 250  # Default GPU power limit in watts
+    gpu_power_limit: 250
+    target_user: "{{ target_user | default('root') }}"
 
   tasks:
     # --- 1. System Utilities & Dependencies ---
@@ -37,61 +39,48 @@
         name: ufw
         state: present
 
-    - name: Set UFW default policy to deny incoming
+    - name: Allow essential ports through UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "22"      # SSH
+        - "11434"   # Ollama
+        - "8000"    # vLLM
+        - "5001"    # Dockge Web UI
+
+    - name: Enable UFW with default deny incoming
       community.general.ufw:
         state: enabled
         policy: deny
         direction: incoming
-
-    - name: Allow SSH (port 22)
-      community.general.ufw:
-        rule: allow
-        port: 22
-        proto: tcp
-
-    - name: Allow Ollama API (port 11434)
-      community.general.ufw:
-        rule: allow
-        port: 11434
-        proto: tcp
-
-    - name: Allow vLLM API (port 8000)
-      community.general.ufw:
-        rule: allow
-        port: 8000
-        proto: tcp
-
-    - name: Allow Dockge Web UI (port 5001)
-      community.general.ufw:
-        rule: allow
-        port: 5001
-        proto: tcp
 
     # --- 3. Nvidia Drivers & Utilities ---
     - name: Install ubuntu-drivers-common
       apt:
         name: ubuntu-drivers-common
         state: present
+      tags: [gpu]
 
     - name: Autoinstall recommended NVIDIA drivers
       ansible.builtin.command: ubuntu-drivers autoinstall
       register: nvidia_autoinstall
-      changed_when: "'Installing' in nvidia_autoinstall.stdout"
-
-    - name: Reboot after Nvidia driver installation (if changed)
-      ansible.builtin.reboot:
-      when: nvidia_autoinstall.changed
+      changed_when: '"Installing" in nvidia_autoinstall.stdout'
+      tags: [gpu]
 
     - name: Add nvtop PPA
       ansible.builtin.apt_repository:
         repo: "{{ nvtop_repo }}"
         state: present
+      tags: [gpu]
 
     - name: Install nvtop
       apt:
         name: nvtop
         state: present
         update_cache: yes
+      tags: [gpu]
 
     # --- 4. Docker Engine Installation ---
     - name: Add Docker GPG key
@@ -113,7 +102,7 @@
 
     - name: Add user to docker group
       user:
-        name: "{{ ansible_env.SUDO_USER | default(ansible_env.USER) }}"
+        name: "{{ target_user }}"
         groups: docker
         append: yes
 
@@ -122,79 +111,73 @@
       ansible.builtin.apt_key:
         url: https://nvidia.github.io/libnvidia-container/gpgkey
         state: present
+      tags: [gpu]
 
     - name: Add NVIDIA Container Toolkit repository
       ansible.builtin.apt_repository:
         repo: "deb https://nvidia.github.io/libnvidia-container/stable/ubuntu{{ ansible_distribution_version }}/$(ARCH) /"
         state: present
         filename: nvidia-container-toolkit
+      tags: [gpu]
 
     - name: Install NVIDIA Container Toolkit
       apt:
         name: nvidia-container-toolkit
         state: present
         update_cache: yes
+      tags: [gpu]
 
-    - name: Configure Docker to use Nvidia runtime by default (Optional but recommended)
+    - name: Configure Docker to use Nvidia runtime
       ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
-      notify: Restart Docker
+      tags: [gpu]
 
-    - name: Enable and ensure Docker is started
+    - name: Enable and restart Docker
       ansible.builtin.systemd:
         name: docker
         enabled: yes
-        state: started
+        state: restarted
 
     # --- 6. GPU Power Limit Systemd Service ---
-    # Ensure you have gpu-limit.service.j2 in your templates directory
     - name: Copy custom gpu-limit.service to systemd
       template:
-        src: gpu-limit.service.j2
+        src: templates/gpu-limit.service.j2
         dest: /etc/systemd/system/gpu-limit.service
         owner: root
         group: root
-        mode: '0644'
+        mode: "0644"
+      tags: [gpu]
 
-    - name: Reload systemd daemon
+    - name: Reload systemd daemon and enable gpu-limit
       ansible.builtin.systemd:
         daemon_reload: yes
-
-    - name: Enable and start gpu-limit service
-      ansible.builtin.systemd:
         name: gpu-limit.service
         enabled: yes
         state: started
+      tags: [gpu]
 
     # --- 7. Dockge Deployment ---
     - name: Create Dockge compose and data directories
       file:
         path: "{{ item }}"
         state: directory
-        owner: "{{ ansible_env.SUDO_USER | default(ansible_env.USER) }}"
+        owner: "{{ target_user }}"
         group: docker
-        mode: '0775'
+        mode: "0775"
       loop:
         - /opt/dockge
         - /opt/dockge/data
         - /opt/dockge/stacks
-        - /opt/stacks # The global stacks directory Dockge manages
+        - /opt/stacks
 
-    # Ensure you have dockge-docker-compose.yml in your files directory
     - name: Copy Dockge docker-compose.yml
       copy:
-        src: dockge-docker-compose.yml
+        src: files/dockge-docker-compose.yml
         dest: /opt/dockge/compose.yaml
-        owner: "{{ ansible_env.SUDO_USER | default(ansible_env.USER) }}"
+        owner: "{{ target_user }}"
         group: docker
-        mode: '0644'
+        mode: "0644"
 
     - name: Deploy Dockge with Docker Compose V2
       ansible.builtin.command:
         cmd: docker compose up -d
         chdir: /opt/dockge
-
-  handlers:
-    - name: Restart Docker
-      ansible.builtin.systemd:
-        name: docker
-        state: restarted
