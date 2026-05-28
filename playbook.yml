@@ -6,6 +6,9 @@
   vars:
     docker_apt_repo: "https://download.docker.com/linux/ubuntu"
     docker_gpg_url: "https://download.docker.com/linux/ubuntu/gpg"
+    docker_apt_keyring: "/etc/apt/keyrings/docker.asc"
+    nvidia_container_gpg_url: "https://nvidia.github.io/libnvidia-container/gpgkey"
+    nvidia_container_apt_keyring: "/etc/apt/keyrings/nvidia-container-toolkit.asc"
     docker_packages:
       - docker-ce
       - docker-ce-cli
@@ -14,6 +17,14 @@
       - docker-compose-plugin
     nvtop_repo: "ppa:flexiondotorg/nvtop"
     gpu_power_limit: 250
+    # Set this to a specific package like "nvidia-driver-550" for deterministic installs.
+    nvidia_driver_package: ""
+    ufw_allow_from_cidrs:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+    dockge_bind_ip: "127.0.0.1"
+    dockge_port: "5001"
     target_user: "{{ target_user | default('root') }}"
 
   tasks:
@@ -39,16 +50,19 @@
         name: ufw
         state: present
 
-    - name: Allow essential ports through UFW
+    - name: Allow SSH through UFW
       community.general.ufw:
         rule: allow
-        port: "{{ item }}"
+        port: "22"
         proto: tcp
-      loop:
-        - "22"      # SSH
-        - "11434"   # Ollama
-        - "8000"    # vLLM
-        - "5001"    # Dockge Web UI
+
+    - name: Allow AI service ports from private CIDRs only
+      community.general.ufw:
+        rule: allow
+        src: "{{ item.0 }}"
+        port: "{{ item.1 }}"
+        proto: tcp
+      loop: "{{ ufw_allow_from_cidrs | product(['11434', '8000', dockge_port]) | list }}"
 
     - name: Enable UFW with default deny incoming
       community.general.ufw:
@@ -63,10 +77,30 @@
         state: present
       tags: [gpu]
 
-    - name: Autoinstall recommended NVIDIA drivers
+    - name: Detect existing NVIDIA driver packages
+      ansible.builtin.shell: "dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null | head -n 1"
+      args:
+        executable: /bin/bash
+      register: installed_nvidia_driver
+      changed_when: false
+      failed_when: false
+      tags: [gpu]
+
+    - name: Install pinned NVIDIA driver package
+      apt:
+        name: "{{ nvidia_driver_package }}"
+        state: present
+        update_cache: yes
+      when: nvidia_driver_package | length > 0
+      tags: [gpu]
+
+    - name: Autoinstall recommended NVIDIA drivers when none are present
       ansible.builtin.command: ubuntu-drivers autoinstall
       register: nvidia_autoinstall
-      changed_when: '"Installing" in nvidia_autoinstall.stdout'
+      changed_when: installed_nvidia_driver.stdout | length == 0
+      when:
+        - nvidia_driver_package | length == 0
+        - installed_nvidia_driver.stdout | length == 0
       tags: [gpu]
 
     - name: Add nvtop PPA
@@ -83,10 +117,17 @@
       tags: [gpu]
 
     # --- 4. Docker Engine Installation ---
-    - name: Add Docker GPG key
-      ansible.builtin.apt_key:
+    - name: Ensure apt keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Docker repository signing key
+      ansible.builtin.get_url:
         url: "{{ docker_gpg_url }}"
-        state: present
+        dest: "{{ docker_apt_keyring }}"
+        mode: "0644"
 
     - name: Get dpkg architecture
       ansible.builtin.command: dpkg --print-architecture
@@ -95,7 +136,7 @@
 
     - name: Add Docker apt repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch={{ dpkg_arch.stdout }}] {{ docker_apt_repo }} {{ ansible_facts['distribution_release'] }} stable"
+        repo: "deb [arch={{ dpkg_arch.stdout }} signed-by={{ docker_apt_keyring }}] {{ docker_apt_repo }} {{ ansible_facts['distribution_release'] }} stable"
         state: present
         filename: docker
 
@@ -112,15 +153,16 @@
         append: yes
 
     # --- 5. Nvidia Container Toolkit ---
-    - name: Add NVIDIA Container Toolkit GPG key
-      ansible.builtin.apt_key:
-        url: https://nvidia.github.io/libnvidia-container/gpgkey
-        state: present
+    - name: Add NVIDIA Container Toolkit signing key
+      ansible.builtin.get_url:
+        url: "{{ nvidia_container_gpg_url }}"
+        dest: "{{ nvidia_container_apt_keyring }}"
+        mode: "0644"
       tags: [gpu]
 
     - name: Add NVIDIA Container Toolkit repository
       ansible.builtin.apt_repository:
-        repo: "deb https://nvidia.github.io/libnvidia-container/stable/ubuntu{{ ansible_distribution_version }}/$(ARCH) /"
+        repo: "deb [arch={{ dpkg_arch.stdout }} signed-by={{ nvidia_container_apt_keyring }}] https://nvidia.github.io/libnvidia-container/stable/ubuntu{{ ansible_distribution_version }}/{{ dpkg_arch.stdout }} /"
         state: present
         filename: nvidia-container-toolkit
       tags: [gpu]
@@ -134,6 +176,8 @@
 
     - name: Configure Docker to use Nvidia runtime
       ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+      register: nvidia_ctk_config
+      changed_when: "'No modification required' not in (nvidia_ctk_config.stdout | default(''))"
       tags: [gpu]
 
     - name: Enable and restart Docker
@@ -171,18 +215,20 @@
       loop:
         - /opt/dockge
         - /opt/dockge/data
-        - /opt/dockge/stacks
         - /opt/stacks
 
-    - name: Copy Dockge docker-compose.yml
-      copy:
-        src: files/dockge-docker-compose.yml
+    - name: Render Dockge docker compose file
+      template:
+        src: templates/dockge-docker-compose.yml.j2
         dest: /opt/dockge/compose.yaml
         owner: "{{ target_user }}"
         group: docker
         mode: "0644"
 
     - name: Deploy Dockge with Docker Compose V2
-      ansible.builtin.command:
-        cmd: docker compose up -d
-        chdir: /opt/dockge
+      community.docker.docker_compose_v2:
+        project_src: /opt/dockge
+        files:
+          - compose.yaml
+        pull: missing
+        state: present
