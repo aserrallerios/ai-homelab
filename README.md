@@ -73,9 +73,9 @@ ai-homelab/
 
 1. When the script finishes, **reboot the server** to load the new Linux kernel modules for the NVIDIA drivers:
 
-```bash
-sudo reboot
-```
+   ```bash
+   sudo reboot
+   ```
 
 1. By default, Dockge is bound to localhost (`127.0.0.1:5001`).
    - Use SSH tunneling for secure access:
