@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SKIP_GPU=false
+EXTRA_VARS=()
 EXTRA_ANSIBLE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -11,15 +12,30 @@ while [[ $# -gt 0 ]]; do
             SKIP_GPU=true
             shift
             ;;
+        -e|--extra-vars)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: $1 requires a value" >&2
+                exit 1
+            fi
+            EXTRA_VARS+=("$2")
+            shift 2
+            ;;
         --help|-h)
             cat <<'EOF'
-Usage: ./bootstrap.sh [--skip-gpu] [-- <extra ansible-playbook args>]
+Usage: ./bootstrap.sh [OPTIONS] [-- <extra ansible-playbook args>]
 
 Options:
-  --skip-gpu   Skip NVIDIA-specific tasks (useful for local VM testing)
-  --help       Show this help message
+  --skip-gpu            Skip NVIDIA-specific tasks (useful for local VM testing)
+  -e, --extra-vars VAR  Pass extra variables to Ansible (key=value or YAML/JSON)
+                        Can be specified multiple times
+  --help                Show this help message
 
-Any additional arguments are passed through to ansible-playbook.
+Examples:
+  ./bootstrap.sh -e gpu_power_limit=200 -e dockge_bind_ip=0.0.0.0
+  ./bootstrap.sh --skip-gpu -e gpu_power_limit=150
+  ./bootstrap.sh -- --check --diff
+
+Any arguments after -- are passed through directly to ansible-playbook.
 EOF
             exit 0
             ;;
@@ -59,6 +75,10 @@ sudo ansible-galaxy collection install -r "$SCRIPT_DIR/requirements.yml"
 
 echo "=> Executing Ansible Playbook..."
 ANSIBLE_CMD=(sudo ansible-playbook "$SCRIPT_DIR/playbook.yml" -e "target_user=$CURRENT_USER")
+
+for var in "${EXTRA_VARS[@]}"; do
+    ANSIBLE_CMD+=(-e "$var")
+done
 
 if [ "$SKIP_GPU" = true ]; then
     ANSIBLE_CMD+=(--skip-tags "gpu")
